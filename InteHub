@@ -1,0 +1,452 @@
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const bcrypt = require('bcrypt');
+const session = require('express-session');
+const bodyParser = require('body-parser');
+const path = require('path');
+
+const app = express();
+const PORT = 3000;
+
+// Configurações
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(express.static('public'));
+app.use(session({
+    secret: 'proovework_secret_2026',
+    resave: false,
+    saveUninitialized: true
+}));
+
+// Banco de dados
+const db = new sqlite3.Database('./proove.db');
+
+// Criar tabelas
+db.serialize(() => {
+    // Empresas
+    db.run(`CREATE TABLE IF NOT EXISTS empresas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT,
+        email TEXT UNIQUE,
+        senha TEXT,
+        cnpj TEXT
+    )`);
+    
+    // Candidatos
+    db.run(`CREATE TABLE IF NOT EXISTS candidatos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT,
+        email TEXT UNIQUE,
+        senha TEXT,
+        cpf TEXT,
+        nota_total REAL DEFAULT 0
+    )`);
+    
+    // Vagas
+    db.run(`CREATE TABLE IF NOT EXISTS vagas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id INTEGER,
+        titulo TEXT,
+        descricao TEXT,
+        area TEXT,
+        ativa INTEGER DEFAULT 1
+    )`);
+    
+    // Testes
+    db.run(`CREATE TABLE IF NOT EXISTS testes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        candidato_id INTEGER,
+        vaga_id INTEGER,
+        nota REAL,
+        data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`);
+    
+    // Perguntas
+    db.run(`CREATE TABLE IF NOT EXISTS perguntas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vaga_area TEXT,
+        pergunta TEXT,
+        opcao_a TEXT,
+        opcao_b TEXT,
+        opcao_c TEXT,
+        opcao_d TEXT,
+        resposta_correta TEXT
+    )`);
+    
+    // Inserir perguntas padrão
+    db.get("SELECT COUNT(*) as total FROM perguntas", (err, row) => {
+        if (row && row.total === 0) {
+            const perguntas = [
+                ['TI', 'O que significa SQL?', 'Structured Query Language', 'Simple Query Logic', 'Standard Quality Language', 'System Query Language', 'A'],
+                ['TI', 'Qual destes é um framework JavaScript?', 'Django', 'React', 'Laravel', 'Flask', 'B'],
+                ['TI', 'O que é Git?', 'Linguagem de programação', 'Sistema de controle de versão', 'Banco de dados', 'Framework CSS', 'B'],
+                ['TI', 'O que significa API?', 'Application Programming Interface', 'Advanced Programming Integration', 'Application Process Interface', 'Automatic Program Installation', 'A'],
+                ['TI', 'Qual o slogan do React?', 'Write once, run anywhere', 'A library for building user interfaces', 'The framework for ambitious developers', 'It just works', 'B']
+            ];
+            
+            const stmt = db.prepare("INSERT INTO perguntas (vaga_area, pergunta, opcao_a, opcao_b, opcao_c, opcao_d, resposta_correta) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            perguntas.forEach(p => stmt.run(p));
+            stmt.finalize();
+            console.log('✅ Perguntas inseridas com sucesso!');
+        }
+    });
+});
+
+// ========== ROTAS ==========
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Proove.work</title>
+            <style>
+                body { font-family: Arial; text-align: center; padding: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+                .btn { display: inline-block; padding: 12px 24px; margin: 10px; background: white; color: #667eea; text-decoration: none; border-radius: 5px; }
+                .btn:hover { background: #f0f0f0; }
+            </style>
+        </head>
+        <body>
+            <h1>🚀 Proove.work</h1>
+            <p>Validação prática de talentos + ranking dos 10 melhores</p>
+            <a href="/cadastro/empresa" class="btn">📢 Sou Empresa</a>
+            <a href="/cadastro/candidato" class="btn">👤 Sou Candidato</a>
+            <br><br>
+            <a href="/login/empresa">Login Empresa</a> | 
+            <a href="/login/candidato">Login Candidato</a>
+        </body>
+        </html>
+    `);
+});
+
+// Cadastro empresa
+app.get('/cadastro/empresa', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Cadastro Empresa</title></head>
+        <body style="font-family: Arial; padding: 40px;">
+            <h2>Cadastro de Empresa</h2>
+            <form action="/api/cadastro/empresa" method="POST">
+                <input type="text" name="nome" placeholder="Nome da empresa" required><br><br>
+                <input type="email" name="email" placeholder="Email" required><br><br>
+                <input type="password" name="senha" placeholder="Senha" required><br><br>
+                <input type="text" name="cnpj" placeholder="CNPJ"><br><br>
+                <button type="submit">Cadastrar</button>
+            </form>
+            <p><a href="/login/empresa">Já tenho conta</a></p>
+            <p><a href="/">Voltar</a></p>
+        </body>
+        </html>
+    `);
+});
+
+// Cadastro candidato
+app.get('/cadastro/candidato', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Cadastro Candidato</title></head>
+        <body style="font-family: Arial; padding: 40px;">
+            <h2>Cadastro de Candidato</h2>
+            <form action="/api/cadastro/candidato" method="POST">
+                <input type="text" name="nome" placeholder="Nome completo" required><br><br>
+                <input type="email" name="email" placeholder="Email" required><br><br>
+                <input type="password" name="senha" placeholder="Senha" required><br><br>
+                <input type="text" name="cpf" placeholder="CPF"><br><br>
+                <button type="submit">Cadastrar</button>
+            </form>
+            <p><a href="/login/candidato">Já tenho conta</a></p>
+            <p><a href="/">Voltar</a></p>
+        </body>
+        </html>
+    `);
+});
+
+// Login empresa
+app.get('/login/empresa', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Login Empresa</title></head>
+        <body style="font-family: Arial; padding: 40px;">
+            <h2>Login - Empresa</h2>
+            <form action="/api/login/empresa" method="POST">
+                <input type="email" name="email" placeholder="Email" required><br><br>
+                <input type="password" name="senha" placeholder="Senha" required><br><br>
+                <button type="submit">Entrar</button>
+            </form>
+            <p><a href="/cadastro/empresa">Não tem conta? Cadastre-se</a></p>
+            <p><a href="/">Voltar</a></p>
+        </body>
+        </html>
+    `);
+});
+
+// Login candidato
+app.get('/login/candidato', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Login Candidato</title></head>
+        <body style="font-family: Arial; padding: 40px;">
+            <h2>Login - Candidato</h2>
+            <form action="/api/login/candidato" method="POST">
+                <input type="email" name="email" placeholder="Email" required><br><br>
+                <input type="password" name="senha" placeholder="Senha" required><br><br>
+                <button type="submit">Entrar</button>
+            </form>
+            <p><a href="/cadastro/candidato">Não tem conta? Cadastre-se</a></p>
+            <p><a href="/">Voltar</a></p>
+        </body>
+        </html>
+    `);
+});
+
+// API Cadastro empresa
+app.post('/api/cadastro/empresa', async (req, res) => {
+    const { nome, email, senha, cnpj } = req.body;
+    const hash = await bcrypt.hash(senha, 10);
+    
+    db.run("INSERT INTO empresas (nome, email, senha, cnpj) VALUES (?, ?, ?, ?)", 
+        [nome, email, hash, cnpj], 
+        (err) => {
+            if (err) return res.send("Erro: " + err.message);
+            res.redirect('/login/empresa');
+        });
+});
+
+// API Cadastro candidato
+app.post('/api/cadastro/candidato', async (req, res) => {
+    const { nome, email, senha, cpf } = req.body;
+    const hash = await bcrypt.hash(senha, 10);
+    
+    db.run("INSERT INTO candidatos (nome, email, senha, cpf) VALUES (?, ?, ?, ?)", 
+        [nome, email, hash, cpf], 
+        (err) => {
+            if (err) return res.send("Erro: " + err.message);
+            res.redirect('/login/candidato');
+        });
+});
+
+// API Login empresa
+app.post('/api/login/empresa', (req, res) => {
+    const { email, senha } = req.body;
+    
+    db.get("SELECT * FROM empresas WHERE email = ?", [email], async (err, empresa) => {
+        if (err || !empresa || !(await bcrypt.compare(senha, empresa.senha))) {
+            return res.send("Email ou senha inválidos");
+        }
+        req.session.empresa_id = empresa.id;
+        req.session.empresa_nome = empresa.nome;
+        res.redirect('/dashboard/empresa');
+    });
+});
+
+// API Login candidato
+app.post('/api/login/candidato', (req, res) => {
+    const { email, senha } = req.body;
+    
+    db.get("SELECT * FROM candidatos WHERE email = ?", [email], async (err, candidato) => {
+        if (err || !candidato || !(await bcrypt.compare(senha, candidato.senha))) {
+            return res.send("Email ou senha inválidos");
+        }
+        req.session.candidato_id = candidato.id;
+        req.session.candidato_nome = candidato.nome;
+        res.redirect('/dashboard/candidatos');
+    });
+});
+
+// Dashboard empresa
+app.get('/dashboard/empresa', (req, res) => {
+    if (!req.session.empresa_id) return res.redirect('/login/empresa');
+    
+    db.all("SELECT * FROM vagas WHERE empresa_id = ?", [req.session.empresa_id], (err, vagas) => {
+        let html = `
+            <!DOCTYPE html>
+            <html>
+            <head><title>Dashboard Empresa</title></head>
+            <body style="font-family: Arial; padding: 20px;">
+                <h2>Olá, ${req.session.empresa_nome}</h2>
+                <a href="/logout">Sair</a>
+                <hr>
+                <h3>Criar Nova Vaga</h3>
+                <form action="/api/nova-vaga" method="POST">
+                    <input type="text" name="titulo" placeholder="Título" required>
+                    <select name="area">
+                        <option value="TI">TI</option>
+                        <option value="Design">Design</option>
+                        <option value="Vendas">Vendas</option>
+                    </select>
+                    <input type="text" name="descricao" placeholder="Descrição">
+                    <button type="submit">Criar</button>
+                </form>
+                <hr>
+                <h3>Minhas Vagas</h3>
+        `;
+        
+        if (vagas && vagas.length > 0) {
+            vagas.forEach(vaga => {
+                html += `
+                    <div style="border:1px solid #ccc; padding:10px; margin:10px 0;">
+                        <strong>${vaga.titulo}</strong> - ${vaga.area}<br>
+                        <a href="/vaga/${vaga.id}/ranking">Ver Top 10 Candidatos</a>
+                    </div>
+                `;
+            });
+        } else {
+            html += "<p>Nenhuma vaga criada ainda.</p>";
+        }
+        
+        html += `</div></body></html>`;
+        res.send(html);
+    });
+});
+
+// Criar vaga
+app.post('/api/nova-vaga', (req, res) => {
+    if (!req.session.empresa_id) return res.redirect('/login/empresa');
+    
+    const { titulo, descricao, area } = req.body;
+    db.run("INSERT INTO vagas (empresa_id, titulo, descricao, area) VALUES (?, ?, ?, ?)",
+        [req.session.empresa_id, titulo, descricao, area],
+        () => res.redirect('/dashboard/empresa'));
+});
+
+// Ranking da vaga
+app.get('/vaga/:id/ranking', (req, res) => {
+    if (!req.session.empresa_id) return res.redirect('/login/empresa');
+    
+    db.all(`
+        SELECT c.nome, c.email, t.nota, t.data,
+               RANK() OVER (ORDER BY t.nota DESC) as posicao
+        FROM testes t
+        JOIN candidatos c ON t.candidato_id = c.id
+        WHERE t.vaga_id = ?
+        ORDER BY t.nota DESC
+        LIMIT 10
+    `, [req.params.id], (err, top10) => {
+        let html = `<html><head><title>Top 10</title></head><body><h2>🏆 Top 10 Candidatos</h2><table border="1"><tr><th>Posição</th><th>Nome</th><th>Email</th><th>Nota</th></tr>`;
+        
+        if (top10 && top10.length > 0) {
+            top10.forEach(c => {
+                html += `<tr><td>#${c.posicao}</td><td>${c.nome}</td><td>${c.email}</td><td>${c.nota}%</td></tr>`;
+            });
+        } else {
+            html += `<tr><td colspan="4">Nenhum candidato ainda</td></tr>`;
+        }
+        
+        html += `</table><br><a href="/dashboard/empresa">Voltar</a></body></html>`;
+        res.send(html);
+    });
+});
+
+// Dashboard candidato
+app.get('/dashboard/candidatos', (req, res) => {
+    if (!req.session.candidato_id) return res.redirect('/login/candidato');
+    
+    db.all("SELECT * FROM vagas WHERE ativa = 1", (err, vagas) => {
+        let html = `
+            <html><head><title>Dashboard Candidato</title></head>
+            <body style="font-family: Arial; padding:20px;">
+                <h2>Olá, ${req.session.candidato_nome}</h2>
+                <a href="/logout">Sair</a>
+                <hr>
+                <h3>Vagas Disponíveis</h3>
+        `;
+        
+        if (vagas && vagas.length > 0) {
+            vagas.forEach(vaga => {
+                html += `
+                    <div style="border:1px solid #ccc; padding:10px; margin:10px 0;">
+                        <strong>${vaga.titulo}</strong> - ${vaga.area}<br>
+                        ${vaga.descricao || ''}<br>
+                        <a href="/teste/${vaga.id}">Fazer Teste Prático</a>
+                    </div>
+                `;
+            });
+        } else {
+            html += "<p>Nenhuma vaga disponível.</p>";
+        }
+        
+        html += `</body></html>`;
+        res.send(html);
+    });
+});
+
+// Página do teste
+app.get('/teste/:vagaId', (req, res) => {
+    if (!req.session.candidato_id) return res.redirect('/login/candidato');
+    
+    db.get("SELECT area FROM vagas WHERE id = ?", [req.params.vagaId], (err, vaga) => {
+        if (!vaga) return res.send("Vaga não encontrada");
+        
+        db.all("SELECT * FROM perguntas WHERE vaga_area = ?", [vaga.area], (err, perguntas) => {
+            let html = `<html><head><title>Teste Prático</title></head><body style="padding:20px;"><h2>Responda as perguntas</h2><form action="/api/enviar-teste" method="POST"><input type="hidden" name="vaga_id" value="${req.params.vagaId}">`;
+            
+            perguntas.forEach((p, index) => {
+                html += `
+                    <div style="margin-bottom:20px;">
+                        <strong>${index+1}. ${p.pergunta}</strong><br>
+                        <label><input type="radio" name="respostas[${index}]" value="A" required> A) ${p.opcao_a}</label><br>
+                        <label><input type="radio" name="respostas[${index}]" value="B"> B) ${p.opcao_b}</label><br>
+                        <label><input type="radio" name="respostas[${index}]" value="C"> C) ${p.opcao_c}</label><br>
+                        <label><input type="radio" name="respostas[${index}]" value="D"> D) ${p.opcao_d}</label>
+                    </div>
+                `;
+            });
+            
+            html += `<button type="submit">Enviar Respostas</button></form></body></html>`;
+            res.send(html);
+        });
+    });
+});
+
+// Enviar teste
+app.post('/api/enviar-teste', (req, res) => {
+    if (!req.session.candidato_id) return res.redirect('/login/candidato');
+    
+    const { vaga_id, respostas } = req.body;
+    
+    db.get("SELECT area FROM vagas WHERE id = ?", [vaga_id], (err, vaga) => {
+        db.all("SELECT * FROM perguntas WHERE vaga_area = ?", [vaga.area], (err, perguntas) => {
+            let acertos = 0;
+            
+            perguntas.forEach((pergunta, index) => {
+                if (respostas && respostas[index] === pergunta.resposta_correta) {
+                    acertos++;
+                }
+            });
+            
+            const nota = (acertos / perguntas.length) * 100;
+            
+            db.run("INSERT INTO testes (candidato_id, vaga_id, nota) VALUES (?, ?, ?)",
+                [req.session.candidato_id, vaga_id, nota],
+                () => {
+                    res.send(`
+                        <html><body style="text-align:center; padding:50px;">
+                            <h2>Sua nota: ${nota}%</h2>
+                            ${nota >= 70 ? '<p>🏆 Parabéns! Você está no ranking!</p>' : '<p>📚 Estude mais e tente novamente.</p>'}
+                            <a href="/dashboard/candidatos">Ver outras vagas</a>
+                        </body></html>
+                    `);
+                });
+        });
+    });
+});
+
+// Logout
+app.get('/logout', (req, res) => {
+    req.session.destroy();
+    res.redirect('/');
+});
+
+// Iniciar servidor
+app.listen(PORT, () => {
+    console.log(`✅ Proove.work rodando em http://localhost:${PORT}`);
+    console.log(`📋 Teste com:`);
+    console.log(`   - Empresa: cadastre e crie vaga`);
+    console.log(`   - Candidato: cadastre e faça teste`);
+    console.log(`   - Empresa vê ranking dos 10 melhores`);
+});
